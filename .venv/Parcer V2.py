@@ -89,7 +89,7 @@ class AdidasScraper:
             number = int(text.split("of")[1].strip())
             return number
 
-    async def scrape_product_ids_and_URLs(self, url: str):
+    async def scrape_product_ids(self, url: str):
         async with aiohttp.ClientSession() as session:
             html = await self.fetch_with_delay(session, url)
             if html is not None:
@@ -99,8 +99,7 @@ class AdidasScraper:
                 products = {}
                 for container in product_cards:
                     product_id = container.get('data-grid-id')
-                    image_url = container.find('img')['src']
-                    print(f"Product ID: {product_id}, Image URL: {image_url}")
+                    print(f"Product ID: {product_id}")
 
                     products[product_id] = {
                         'brand': None,
@@ -110,7 +109,10 @@ class AdidasScraper:
                         'price': None,
                         'discount': None,
                         'product_id': product_id,
-                        'image_url': image_url
+                        'image_side_url': None,
+                        'image_top_url': None,
+                        'image_34_url': None,
+                        'gender' : None
                     }
                 return products
             else:
@@ -136,7 +138,10 @@ class AdidasScraper:
                             'price': None,
                             'discount': None,
                             'product_id': product_id_retry,
-                            'image_url': image_url_retry
+                            'image_side_url': None,
+                            'image_top_url': None,
+                            'image_34_url': None,
+                            'gender': None
                         }
                     return products_retry
                 else:
@@ -174,6 +179,26 @@ class AdidasScraper:
 
     async def parse_adidas_json(self, json_data):
         print("Parsing Adidas JSON data:", json_data)
+
+        # Инициализируем переменную для URL изображения
+        image_side_url, image_top_url, image_34_url = None, None, None
+
+
+        for image in json_data.get("images", []):
+            if image.get("metadata", {}).get("sortOrder") == '1':
+                image_side_url = image.get("src")
+
+        for image in json_data.get("images", []):
+            if image.get("metadata", {}).get("sortOrder") == '2':
+                image_top_url = image.get("src")
+
+        for image in json_data.get("images", []):
+            if image.get("metadata", {}).get("sortOrder") == '4':
+                image_34_url = image.get("src")
+
+
+
+
         product_info = {
             "brand": json_data["brand"],
             "category": json_data["category"],
@@ -182,7 +207,10 @@ class AdidasScraper:
             "color": json_data["color"],
             "price": json_data["price"],
             "discount": json_data.get("salePrice", ""),
-            "image_url": json_data.get("image", {}).get("url", "")
+            "image_side_url": image_side_url,
+            "image_top_url": image_top_url,
+            "image_34_url": image_34_url,
+            "gender": json_data.get("gender", "")
         }
         return product_info
 
@@ -206,12 +234,11 @@ class AdidasScraper:
         return await self.fetch_adidas_data(session, product_id)
 
     async def process_page(self, db_manager: AsyncDatabaseManager, url: str):
-        product_data = await self.scrape_product_ids_and_URLs(url)
+        product_data = await self.scrape_product_ids(url)
         detailed_data = await self.scrape_adidas(product_data)
         for key, value in detailed_data.items():
             for key1, value1 in value.items():
-                if key1 != "image_url":
-                    product_data[key][key1] = detailed_data[key][key1]
+                product_data[key][key1] = detailed_data[key][key1]
 
         await db_manager.insert_data(product_data.values())
 
@@ -223,21 +250,38 @@ async def main():
     await db_manager.connect_to_database()
     await db_manager.create_table()
 
+    print("Выберите действие:")
+    print("1: Произвести парсинг по заданному URL")
+    print("2: Произвести парсинг по product_id без brand")
+    print("3: Получить Excel файл с базой")
+    choice = input("Введите номер действия: ")
+
     scraper = AdidasScraper()
-    base_url = "https://www.adidas.com/us/men-shoes"
 
-    first_page_url = base_url
-    await scraper.process_page(db_manager, first_page_url)
+    if choice == "1":
+        url = input("Введите URL: ")
+        await db_manager.fetch_product_data(url)
+        base_url = url
 
-    num_pages = await scraper.pages(base_url)
-    urls = [f"{base_url}?start={i * 48}" for i in range(1, num_pages)]
-    tasks = [scraper.process_page(db_manager, url) for url in urls]
+        first_page_url = base_url
+        await scraper.process_page(db_manager, first_page_url)
 
-    await asyncio.gather(*tasks)
+        num_pages = await scraper.pages(base_url)
+        urls = [f"{base_url}?start={i * 48}" for i in range(1, num_pages)]
+        tasks = [scraper.process_page(db_manager, url) for url in urls]
 
-    await db_manager.export_to_excel('adidas_products_final.xlsx')
-    await db_manager.close_connection()
+        await asyncio.gather(*tasks)
 
+        await db_manager.export_to_excel('adidas_products_final.xlsx')
+        await db_manager.close_connection()
+    elif choice == "2":
+        product_ids = await db_manager.get_products_without_brand()
+        detailed_data = await scraper.scrape_adidas(product_ids)
+        await db_manager.insert_data(detailed_data.values())
+    elif choice == "3":
+        await db_manager.export_to_excel('adidas_products_final.xlsx')
+    else:
+        print("Некорректный выбор действия")
 
 if __name__ == "__main__":
     asyncio.run(main())
